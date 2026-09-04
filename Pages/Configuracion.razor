@@ -1,0 +1,87 @@
+@page "/configuracion"
+@inject YaVoy.Services.TarifaService TarifaService
+@inject YaVoy.Services.TasaEuroService TasaEuroService
+
+<PageTitle>YaVoy - Configuración</PageTitle>
+
+<h1>⚙️ Configuración de Tarifas (Modo Repartidor)</h1>
+
+<div class="mb-3">
+    <label>Tarifa base (USD):</label>
+    <input type="number" step="0.01" class="form-control" @bind="TarifaService.Configuracion.TarifaBaseUsd" />
+</div>
+
+<div class="mb-3">
+    <label>Tarifa por km (USD):</label>
+    <input type="number" step="0.01" class="form-control" @bind="TarifaService.Configuracion.TarifaPorKmUsd" />
+</div>
+
+<div class="mb-3">
+    <label>Recargo zona foránea (ej. 0.25 = 25%):</label>
+    <input type="number" step="0.01" class="form-control" @bind="TarifaService.Configuracion.RecargoZonaForanea" />
+</div>
+
+<hr />
+
+<div class="mb-3">
+    <label>Tasa Euro actual (Bs por 1 USD):</label>
+    <input type="number" step="0.01" class="form-control" @bind="TarifaService.Configuracion.TasaEuroActual" />
+
+    <button class="btn btn-outline-primary mt-2" @onclick="ActualizarTasaAutomatica" disabled="@cargando">
+        🔄 Actualizar tasa automáticamente
+    </button>
+
+    @if (cargando)
+    {
+        <p>Consultando tasa oficial...</p>
+    }
+    @if (mensajeError != null)
+    {
+        <p class="text-danger">@mensajeError</p>
+    }
+    @if (ultimaActualizacionExitosa)
+    {
+        <p class="text-success">✅ Tasa actualizada correctamente.</p>
+    }
+</div>
+
+<p><em>Última actualización: @TarifaService.Configuracion.FechaActualizacionTasa.ToString("dd/MM/yyyy HH:mm")</em></p>
+
+<a href="/" class="btn btn-secondary">← Volver a Cotizar</a>
+
+@code {
+    private bool cargando = false;
+    private string? mensajeError;
+    private bool ultimaActualizacionExitosa = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Intenta traer la tasa automáticamente al abrir esta pantalla, solo si no se ha configurado hoy
+        if (TarifaService.Configuracion.TasaEuroActual == 0)
+        {
+            await ActualizarTasaAutomatica();
+        }
+    }
+
+    private async Task ActualizarTasaAutomatica()
+    {
+        cargando = true;
+        mensajeError = null;
+        ultimaActualizacionExitosa = false;
+
+        var tasa = await TasaEuroService.ObtenerTasaEuroAsync();
+
+        cargando = false;
+
+        if (tasa != null)
+        {
+            TarifaService.Configuracion.TasaEuroActual = tasa.Value;
+            TarifaService.Configuracion.FechaActualizacionTasa = DateTime.Now;
+            ultimaActualizacionExitosa = true;
+        }
+        else
+        {
+            mensajeError = "No se pudo obtener la tasa automáticamente. Ingrésala manualmente arriba.";
+        }
+    }
+}

@@ -1,0 +1,191 @@
+﻿@page "/"
+@inject YaVoy.Services.RutaService RutaService
+@inject YaVoy.Services.TarifaService TarifaService
+@inject YaVoy.Services.ZonasService ZonasService
+@inject IJSRuntime JS
+@inject YaVoy.Services.TasaEuroService TasaEuroService
+
+<PageTitle>YaVoy - Cotiza tu Delivery</PageTitle>
+
+<h1>🏍️ YaVoy Delivery</h1>
+<p>Toca el mapa: primer clic = origen, segundo clic = destino.</p>
+
+<button class="btn btn-primary" @onclick="UsarMiUbicacion">📍 Usar mi ubicación actual</button>
+<button class="btn btn-secondary" @onclick="ReiniciarPuntos">🔄 Reiniciar puntos</button>
+
+<div class="mb-2 mt-3">
+    <label>¿Pegaste un link de Google Maps? Pégalo aquí (destino):</label>
+    <input type="text" class="form-control" @bind="linkGoogleMaps" placeholder="https://maps.google.com/..." />
+    <button class="btn btn-outline-primary mt-1" @onclick="ProcesarLink">Usar este link</button>
+</div>
+
+<div id="mapa-container" style="height: 400px; width: 100%; margin-top: 10px;"></div>
+
+<div class="mb-2 mt-3">
+    <label>Municipio de destino:</label>
+    <select class="form-control" @bind="municipioSeleccionado">
+        <option value="">-- Selecciona un municipio --</option>
+        @foreach (var municipio in ZonasService.ObtenerMunicipios())
+        {
+            <option value="@municipio.Nombre">@municipio.Nombre @(municipio.EsZonaBase ? "" : "(zona foránea)")</option>
+        }
+    </select>
+</div>
+
+<div class="mt-3">
+    <p><strong>Origen:</strong> @(origenLat != null ? $"{origenLat:F5}, {origenLng:F5}" : "No definido")</p>
+    <p><strong>Destino:</strong> @(destinoLat != null ? $"{destinoLat:F5}, {destinoLng:F5}" : "No definido")</p>
+</div>
+
+<button class="btn btn-success" @onclick="Calcular" disabled="@(!PuedeCalcular)">
+    💰 Calcular Tarifa
+</button>
+
+@if (calculando)
+{
+    <p>Calculando distancia...</p>
+}
+
+@if (errorMensaje != null)
+{
+    <p class="text-danger">@errorMensaje</p>
+}
+
+@if (resultado != null)
+{
+    <div class="alert alert-info mt-3">
+        <h4>Cotización</h4>
+        <p>Distancia: @resultado.DistanciaKm km @(resultado.EsZonaForanea ? "(zona foránea, recargo aplicado)" : "")</p>
+        <p><strong>Precio en USD:</strong> $@resultado.PrecioUsd (tarifa preferencial pagando en divisa)</p>
+        <p><strong>Referencia en Bs:</strong> @resultado.PrecioBs.ToString("N2") Bs</p>
+
+        <button class="btn btn-success mt-2" @onclick="EnviarPorWhatsApp">📲 Enviar cotización por WhatsApp</button>
+    </div>
+}
+
+@code {
+    private double? origenLat, origenLng, destinoLat, destinoLng;
+    private string municipioSeleccionado = "";
+    private string linkGoogleMaps = "";
+    private string? errorMensaje;
+    private bool calculando = false;
+    private YaVoy.Models.Cotizacion? resultado;
+    private DotNetObjectReference<Home>? objRef;
+
+    private bool PuedeCalcular => origenLat != null && destinoLat != null && !calculando && !string.IsNullOrEmpty(municipioSeleccionado);
+
+    protected override async Task OnInitializedAsync()
+    {
+    // Actualiza la tasa del Euro silenciosamente al abrir la pantalla principal
+        var tasa = await TasaEuroService.ObtenerTasaEuroAsync();
+        if (tasa != null)
+        {
+            TarifaService.Configuracion.TasaEuroActual = tasa.Value;
+            TarifaService.Configuracion.FechaActualizacionTasa = DateTime.Now;
+        }
+    // Si falla (tasa == null), simplemente se queda con el último valor conocido, sin interrumpir al usuario
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            objRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("iniciarMapa", objRef);
+        }
+    }
+
+    [JSInvokable]
+    public void ActualizarOrigen(double lat, double lng)
+    {
+        origenLat = lat;
+        origenLng = lng;
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void ActualizarDestino(double lat, double lng)
+    {
+        destinoLat = lat;
+        destinoLng = lng;
+        StateHasChanged();
+    }
+
+    private async Task UsarMiUbicacion()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("obtenerUbicacionActual");
+        }
+        catch
+        {
+            errorMensaje = "No se pudo obtener tu ubicación. Verifica los permisos del navegador.";
+        }
+    }
+
+    private async Task ReiniciarPuntos()
+    {
+        origenLat = null; origenLng = null;
+        destinoLat = null; destinoLng = null;
+        resultado = null;
+        errorMensaje = null;
+        await JS.InvokeVoidAsync("reiniciarMapa");
+    }
+
+    private async Task ProcesarLink()
+    {
+        var coords = RutaService.ExtraerCoordenadasDeLink(linkGoogleMaps);
+        if (coords != null)
+        {
+            await JS.InvokeVoidAsync("marcarPuntoDesdeCoordenadas", coords.Value.lat, coords.Value.lng);
+            errorMensaje = null;
+        }
+        else
+        {
+            errorMensaje = "No se pudo leer ese link (posiblemente es un link corto). Usa el mapa o el GPS.";
+        }
+    }
+
+    private async Task Calcular()
+    {
+        if (origenLat == null || destinoLat == null) return;
+
+        calculando = true;
+        errorMensaje = null;
+        resultado = null;
+
+        var distancia = await RutaService.ObtenerDistanciaKmAsync(
+            origenLat.Value, origenLng!.Value, destinoLat.Value, destinoLng!.Value);
+
+        calculando = false;
+
+        if (distancia == null)
+        {
+            errorMensaje = "No se pudo calcular la ruta. Verifica tu conexión o intenta de nuevo.";
+            return;
+        }
+
+        // Por ahora asumimos zona base; el siguiente paso permitirá seleccionar municipio destino
+        bool esForanea = ZonasService.EsZonaForanea(municipioSeleccionado);
+
+        resultado = TarifaService.CalcularCotizacion("Origen seleccionado", "Destino seleccionado", distancia.Value, esForanea);
+    }
+
+    private async Task EnviarPorWhatsApp()
+    {
+        if (resultado == null) return;
+
+        var zonaTexto = resultado.EsZonaForanea ? " (incluye recargo por zona foránea)" : "";
+
+        var mensaje = $"Hola, quiero confirmar mi delivery con YaVoy\n\n" +
+                  $"Destino: {municipioSeleccionado}{zonaTexto}\n" +
+                  $"Distancia: {resultado.DistanciaKm} km\n" +
+                  $"Precio: ${resultado.PrecioUsd} USD (tarifa preferencial en divisa)\n" +
+                  $"Referencia: {resultado.PrecioBs:N2} Bs\n\n" +
+                  $"¿Confirmamos el envío?";
+
+        var mensajeCodificado = Uri.EscapeDataString(mensaje);
+        var url = $"https://wa.me/?text={mensajeCodificado}";
+        await JS.InvokeVoidAsync("open", url, "_blank");
+    }
+}
